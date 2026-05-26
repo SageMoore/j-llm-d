@@ -53,10 +53,14 @@ inferencePool:
     - number: 8001
     - number: 8002
     - number: 8003
+    - number: 8004
+    - number: 8005
+    - number: 8006
+    - number: 8007
   modelServers:
     matchLabels:
       llm-d.ai/inferenceServing: "true"
-      llm-d.ai/model: DeepSeek-R1-0528-NVFP4-v2
+      llm-d.ai/model: Qwen3-235B-A22B-Instruct-2507-FP8
       llm-d.ai/deployment: agg
       llm-d.ai/owner: ${OWNER}
 

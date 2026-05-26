@@ -16,7 +16,7 @@ sidecar:
   dashboards:
     enabled: true
     label: grafana_dashboard
-    searchNamespace: vllm
+    searchNamespace: sage-vllm
 
 datasources:
   datasources.yaml:
@@ -24,6 +24,6 @@ datasources:
     datasources:
       - name: Prometheus
         type: prometheus
-        url: http://prometheus-server.vllm.svc.cluster.local
+        url: http://prometheus-server.sage-vllm.svc.cluster.local
         access: proxy
         isDefault: true

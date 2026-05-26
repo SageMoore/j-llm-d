@@ -4,10 +4,10 @@ metadata:
   name: wide-ep-prefill
   labels:
     llm-d.ai/inferenceServing: "true"
-    llm-d.ai/model: DeepSeek-R1-0528-NVFP4-v2
+    llm-d.ai/model: Qwen3-235B-A22B-Instruct-2507-FP8
     llm-d.ai/role: prefill
 spec:
-  replicas: 2
+  replicas: 1
   rolloutStrategy:
     type: RollingUpdate
     rollingUpdateConfiguration:
@@ -19,27 +19,32 @@ spec:
         labels:
           llm-d.ai/deploy-ts: DEPLOY_TS_PLACEHOLDER
           llm-d.ai/inferenceServing: "true"
-          llm-d.ai/model: DeepSeek-R1-0528-NVFP4-v2
+          llm-d.ai/model: Qwen3-235B-A22B-Instruct-2507-FP8
           llm-d.ai/owner: OWNER_PLACEHOLDER
           llm-d.ai/role: prefill
       spec:
         serviceAccountName: wide-ep
+        imagePullSecrets:
+          - name: quay-pull-secret
         terminationGracePeriodSeconds: 0
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                  - key: node.coreweave.cloud/physical-topology.grid-group
+                    operator: In
+                    values:
+                      - "F"
         volumes:
           - name: dshm
             emptyDir:
               medium: Memory
               sizeLimit: 2Gi
-          - name: lustre
-            persistentVolumeClaim:
-              claimName: lustre-pvc-vllm
           - name: local-nvme
             hostPath:
-              path: /mnt/numa0
+              path: /mnt/local
               type: Directory
-        resourceClaims:
-          - name: compute-domain-channel
-            resourceClaimTemplateName: llm-d-dev-claim
         containers:
           - name: vllm
             image: VLLM_IMAGE_PLACEHOLDER
@@ -48,6 +53,7 @@ spec:
                 add:
                   - IPC_LOCK
                   - SYS_RAWIO
+                  - SYS_PTRACE
               runAsGroup: 0
               runAsUser: 0
             imagePullPolicy: Always
@@ -57,8 +63,7 @@ spec:
             args:
               - |-
                 set -euo pipefail
-                # Persist logs to Lustre so they survive LWS pod recreation
-                LOG_DIR=LUSTRE_PREFIX_PLACEHOLDER/logs/prefill
+                LOG_DIR=/mnt/local/logs/prefill
                 mkdir -p "$LOG_DIR"
                 LOG_FILE="$LOG_DIR/${HOSTNAME}_$(date +%Y%m%d-%H%M%S).log"
                 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -75,17 +80,18 @@ spec:
                   cd -
                 fi
 
-                # DEV mode: use persistent Lustre venv; otherwise use baked-in image venv
+                # DEV mode: use persistent Lustre venv; otherwise use system vllm
                 if [ -n "${VLLM_DEV_VENV}" ] && [ -d "${VLLM_DEV_VENV}" ]; then
                   echo "Using dev venv at ${VLLM_DEV_VENV}"
                   source "${VLLM_DEV_VENV}/bin/activate"
-                else
-                  source /opt/vllm/bin/activate
                 fi
 
-                uv pip install --upgrade mistral_common
+                apt-get update && apt-get install -y 'cuda-cuobjdump-*'
 
-                DP_SIZE_LOCAL=$((4 / TP_SIZE))
+                uv pip install --system --upgrade transformers
+                uv pip install --system py-spy
+
+                DP_SIZE_LOCAL=$((8 / TP_SIZE))
                 DP_SIZE=$((LWS_GROUP_SIZE * DP_SIZE_LOCAL))
                 START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
@@ -110,8 +116,9 @@ spec:
                   VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT}/rank$R \
                   FLASHINFER_CACHE_DIR=${FLASHINFER_CACHE_DIR}/rank$R \
                   CUDA_VISIBLE_DEVICES=$GPUS vllm serve \
-                    nvidia/DeepSeek-R1-0528-NVFP4-v2 \
+                    Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 \
                     --disable-uvicorn-access-log \
+                    --max-model-len 4096\
                     --port $((8000 + R)) \
                     --tensor-parallel-size $TP_SIZE \
                     --enable-expert-parallel \
@@ -119,9 +126,11 @@ spec:
                     --trust-remote-code \
                     --kv_transfer_config "$KV_TRANSFER_CONFIG" \
                     --gpu-memory-utilization 0.85 \
-                    --all2all-backend "flashinfer_nvlink_one_sided" \
+                    --max-num-batched-tokens 4096 \
+                    --max-num-seqs 256 \
+                    --all2all-backend "deepep_high_throughput" \
                     --disable_cascade_attn \
-                    --api-server-count 4 \
+                    --api-server-count 8 \
                     --async-scheduling \
                     --kv-cache-dtype fp8 \
                     --enable-force-include-usage &
@@ -141,8 +150,6 @@ spec:
                 exit 1
 
             env:
-              - name: VLLM_USE_V2_MODEL_RUNNER
-                value: "1"
               #- name: VLLM_NAN_DETECT
               #  value: "1"
               #- name: VLLM_ATTENTION_NAN_DETECT
@@ -152,6 +159,10 @@ spec:
                 value: "1"
               - name: TQDM_DISABLE
                 value: "1"
+
+              - name: CUDA_LAUNCH_BLOCKING
+                value: "0"
+
 
               # Set to a Lustre venv path to override baked-in vLLM (e.g. LUSTRE_PREFIX_PLACEHOLDER/vllm-venv)
               - name: VLLM_DEV_VENV
@@ -171,11 +182,11 @@ spec:
               - name: HF_HOME
                 value: /mnt/local/hf_cache
 
-              # Compile caches - persist across restarts for faster startup
+              # Compile caches
               - name: VLLM_CACHE_ROOT
-                value: LUSTRE_PREFIX_PLACEHOLDER/vllm_cache_extdp
+                value: /mnt/local/vllm_cache
               - name: FLASHINFER_CACHE_DIR
-                value: LUSTRE_PREFIX_PLACEHOLDER/flashinfer_cache_extdp
+                value: /mnt/local/flashinfer_cache
 
               # Tensor parallelism - GPUs per DP rank (DP_SIZE_LOCAL = 4 / TP_SIZE)
               - name: TP_SIZE
@@ -184,22 +195,31 @@ spec:
               - name: VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE
                 value: "1"
 
+
               # Common vLLM settings
               - name: TRITON_LIBCUDA_PATH
                 value: /usr/lib64
               - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
-                value: "1"
+                value: "0"
               - name: NVIDIA_GDRCOPY
                 value: enabled
 
-              # Override container default that disables VMM
+              # NVSHMEM config
               - name: NVSHMEM_DISABLE_CUDA_VMM
                 value: "0"
+              - name: NVSHMEM_HCA_PREFIX
+                value: ibp
 
-              # UCX configuration for NIXL - use only working InfiniBand devices
-              # Excluded: mlx5_2/5 are Ethernet/RoCE with no GID configured, mlx5_6 is DOWN
+              # UCX configuration for NIXL
               - name: UCX_NET_DEVICES
-                value: "mlx5_0:1,mlx5_1:1,mlx5_3:1,mlx5_4:1"
+                value: "ibp0:1,ibp1:1,ibp2:1,ibp3:1,ibp4:1,ibp5:1,ibp6:1,ibp7:1"
+              # Point UCX at NIXL's bundled transport plugins (auditwheel-relocated)
+              - name: UCX_MODULE_DIR
+                value: /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/ucx
+              - name: UCX_TLS
+                value: "rc,cuda_copy,cuda_ipc,gdr_copy"
+              - name: UCX_MEMTYPE_CACHE
+                value: "n"
 
               # Engine startup timeout (default 600s, increase for large models over network storage)
               - name: VLLM_ENGINE_READY_TIMEOUT_S
@@ -207,7 +227,7 @@ spec:
 
               # Debug logging
               - name: VLLM_LOGGING_LEVEL
-                value: INFO
+                value: DEBUG
               #- name: NCCL_DEBUG
               #  value: "TRACE"
               #- name: NVSHMEM_DEBUG
@@ -228,34 +248,44 @@ spec:
               - containerPort: 8003
                 name: vllm-rank3
                 protocol: TCP
+              - containerPort: 8004
+                name: vllm-rank4
+                protocol: TCP
+              - containerPort: 8005
+                name: vllm-rank5
+                protocol: TCP
+              - containerPort: 8006
+                name: vllm-rank6
+                protocol: TCP
+              - containerPort: 8007
+                name: vllm-rank7
+                protocol: TCP
             readinessProbe:
               exec:
                 command:
                   - /bin/bash
                   - -c
                   - |
-                    for port in 8000 8001 8002 8003; do
+                    for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
                       curl -sf http://localhost:$port/v1/models | grep -q '"id"' || exit 1
                     done
               periodSeconds: 5
               failureThreshold: 60
             resources:
-              claims:
-                - name: compute-domain-channel
               limits:
                 ephemeral-storage: 128Gi
                 memory: 512Gi
-                nvidia.com/gpu: "4"
+                nvidia.com/gpu: "8"
+                rdma/ib: "1"
               requests:
                 cpu: 32
                 ephemeral-storage: 128Gi
                 memory: 512Gi
-                nvidia.com/gpu: "4"
+                nvidia.com/gpu: "8"
+                rdma/ib: "1"
             volumeMounts:
               - mountPath: /dev/shm
                 name: dshm
-              - mountPath: /mnt/lustre
-                name: lustre
               - mountPath: /mnt/local
                 name: local-nvme
             workingDir: /code

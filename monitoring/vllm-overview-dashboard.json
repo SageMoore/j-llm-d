@@ -1745,7 +1745,9 @@
           "id": 351,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -1851,7 +1853,9 @@
           "id": 352,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -1957,7 +1961,9 @@
           "id": 353,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2063,7 +2069,9 @@
           "id": 354,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2169,7 +2177,9 @@
           "id": 355,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2275,7 +2285,9 @@
           "id": 356,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2381,7 +2393,9 @@
           "id": 357,
           "options": {
             "legend": {
-              "calcs": ["lastNotNull"],
+              "calcs": [
+                "lastNotNull"
+              ],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2464,7 +2478,7 @@
               "showLineNumbers": false,
               "showMiniMap": false
             },
-            "content": "## TTFT = API Server Delay + Engine Queue Time + Prefill Compute\n\nvLLM sets `arrival_time` in the API server's Renderer (`base.py`), but `queue_time` starts from `queued_ts` when the engine core receives the request. The derived **API Server Delay** panel below computes `avg(TTFT) - avg(queue_time) - avg(prefill_time)` per pod, which equals `queued_ts - arrival_time` \u2014 the time the request spends in the API server process between the Renderer and engine forwarding.\n\nUnder high concurrency, a single API server process (`--api-server-count 1`) streaming tokens for hundreds of concurrent requests can become the bottleneck. Scale with `--api-server-count`.",
+            "content": "## TTFT = API Server Delay + Engine Queue Time + Prefill Compute\n\nvLLM sets `arrival_time` in the API server's Renderer (`base.py`), but `queue_time` starts from `queued_ts` when the engine core receives the request. The derived **API Server Delay** panel below computes `avg(TTFT) - avg(queue_time) - avg(prefill_time)` per pod, which equals `queued_ts - arrival_time` — the time the request spends in the API server process between the Renderer and engine forwarding.\n\nUnder high concurrency, a single API server process (`--api-server-count 1`) streaming tokens for hundreds of concurrent requests can become the bottleneck. Scale with `--api-server-count`.",
             "mode": "markdown"
           },
           "pluginVersion": "12.3.1",
@@ -2477,7 +2491,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "description": "Time from engine core receiving request (queued_ts) to scheduler first processing it (scheduled_ts). Measured entirely within the engine \u2014 does NOT include API server delay.",
+          "description": "Time from engine core receiving request (queued_ts) to scheduler first processing it (scheduled_ts). Measured entirely within the engine — does NOT include API server delay.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5281,6 +5295,117 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "EPLB balancedness: avg tokens-per-rank / max tokens-per-rank, summed across MoE layers. 1.0 = perfectly balanced expert load across EP ranks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.9
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 84
+      },
+      "id": 303,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "min",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "vllm:eplb_balancedness{job=\"vllm-decode\", pod=~\"${deployment}-.*\"}",
+          "instant": false,
+          "legendFormat": "{{pod}}-r{{rank}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "EPLB Balancedness",
+      "type": "timeseries"
     }
   ],
   "preload": false,

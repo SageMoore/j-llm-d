@@ -1,7 +1,7 @@
 set dotenv-load
 set dotenv-required
 
-NAMESPACE := "vllm"
+NAMESPACE := "sage-vllm"
 HF_TOKEN := "$HF_TOKEN"
 GH_TOKEN := "$GH_TOKEN"
 
@@ -494,10 +494,10 @@ benchmark-stairs:
     cd "{{NYANN_BENCH_DIR}}"
     just deploy {{NAME_PREFIX}}-sharegpt-load "$BASE_URL" \
       "{\"load\":{\"concurrency\":128},\"warmup\":{\"duration\":\"300s\",\"stagger\":true},\"sweep\":{\"min\":128,\"max\":1920,\"steps\":10,\"step_duration\":\"300s\"},\"workload\":{\"type\":\"corpus\",\"corpus_path\":\"$LUSTRE/corpus/sharegpt.txt\",\"isl\":500,\"osl\":1500,\"turns\":1}}" \
-      8 {{NAMESPACE}} arm64 lustre pr-28 &
+      8 {{NAMESPACE}} amd64 lustre latest &
     just deploy {{NAME_PREFIX}}-poker-eval "$BASE_URL" \
       "{\"load\":{\"concurrency\":64,\"duration\":\"3600s\"},\"workload\":{\"type\":\"gsm8k\",\"gsm8k_path\":\"$LUSTRE/gsm8k_test.jsonl\",\"gsm8k_train_path\":\"$LUSTRE/gsm8k_train.jsonl\"}}" \
-      1 {{NAMESPACE}} arm64 lustre pr-28 &
+      1 {{NAMESPACE}} amd64 lustre latest &
     wait
     echo "nyann-bench jobs submitted. Use 'just nyann-logs {{NAME_PREFIX}}-sharegpt-load' or 'just nyann-logs {{NAME_PREFIX}}-poker-eval' to follow."
 
@@ -513,10 +513,10 @@ benchmark-constant:
     cd "{{NYANN_BENCH_DIR}}"
     just deploy {{NAME_PREFIX}}-sharegpt-load "$BASE_URL" \
       "{\"load\":{\"concurrency\":1900,\"duration\":\"3600s\"},\"warmup\":{\"duration\":\"120s\",\"stagger\":true},\"workload\":{\"type\":\"corpus\",\"corpus_path\":\"$LUSTRE/corpus/sharegpt.txt\",\"isl\":500,\"osl\":1500,\"turns\":1}}" \
-      8 {{NAMESPACE}} arm64 lustre pr-28 &
+      8 {{NAMESPACE}} amd64 lustre latest &
     just deploy {{NAME_PREFIX}}-poker-eval "$BASE_URL" \
       "{\"load\":{\"concurrency\":64,\"duration\":\"3600s\"},\"workload\":{\"type\":\"gsm8k\",\"gsm8k_path\":\"$LUSTRE/gsm8k_test.jsonl\",\"gsm8k_train_path\":\"$LUSTRE/gsm8k_train.jsonl\"}}" \
-      1 {{NAMESPACE}} arm64 lustre pr-28 &
+      1 {{NAMESPACE}} amd64 lustre latest &
     wait
     echo "nyann-bench jobs submitted. Use 'just nyann-logs {{NAME_PREFIX}}-sharegpt-load' or 'just nyann-logs {{NAME_PREFIX}}-poker-eval' to follow."
 
@@ -539,13 +539,13 @@ query-prometheus CLIENT_JOB=(NAME_PREFIX + "-sharegpt-load") DEPLOYMENT=DEPLOY_N
     exit 1
   fi
   cd "{{NYANN_BENCH_DIR}}"
-  just query-prometheus {{CLIENT_JOB}} {{DEPLOYMENT}} {{NAMESPACE}} '' {{EVAL_JOB}} {{ARGS}}
+  just query-prometheus {{CLIENT_JOB}} {{DEPLOYMENT}} {{NAMESPACE}} http://localhost:9090 '' {{EVAL_JOB}} {{ARGS}}
 
 # === Monitoring ===
 
 # Install Prometheus and Grafana (namespace-scoped, no cluster permissions needed)
 start-monitoring:
-  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update && helm repo add grafana https://grafana.github.io/helm-charts --force-update && helm repo update && kubectl apply -f {{MONITORING_DIR}}/prometheus-rbac.yaml && kubectl apply -f {{MONITORING_DIR}}/grafana-rbac.yaml && helm upgrade --install prometheus prometheus-community/prometheus -n {{NAMESPACE}} -f {{MONITORING_DIR}}/prometheus-values.yaml --set rbac.create=false --set serviceAccounts.server.create=false && helm upgrade --install grafana grafana/grafana -n {{NAMESPACE}} -f {{MONITORING_DIR}}/grafana-values.yaml --set rbac.create=false
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update && helm repo add grafana https://grafana.github.io/helm-charts --force-update && helm repo update && kubectl apply -f {{MONITORING_DIR}}/prometheus-rbac.yaml && kubectl apply -f {{MONITORING_DIR}}/grafana-rbac.yaml && helm upgrade --install prometheus prometheus-community/prometheus -n {{NAMESPACE}} -f {{MONITORING_DIR}}/prometheus-values.yaml --set rbac.create=false --set serviceAccounts.server.create=false --set serviceAccounts.server.name=prometheus-server && helm upgrade --install grafana grafana/grafana -n {{NAMESPACE}} -f {{MONITORING_DIR}}/grafana-values.yaml --set rbac.create=false
 
 # Uninstall monitoring stack
 stop-monitoring:
@@ -576,7 +576,7 @@ load-dashboards:
 # === KV Cache Sweep ===
 
 KV_SWEEP_IMAGE := "quay.io/tms/llm-d-cuda-dev:ef2c4f7"
-KV_SWEEP_MODEL := "nvidia/DeepSeek-R1-0528-NVFP4-v2"
+KV_SWEEP_MODEL := "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
 KV_SWEEP_PRIORITY := "low-priority"
 KV_SWEEP_GPU_MEM_UTIL := "0.75"
 KV_SWEEP_MAX_TOKENS := "1024"
