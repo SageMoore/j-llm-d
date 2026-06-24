@@ -11,6 +11,20 @@ NAME_PREFIX := env("USER", "dev")
 DEPLOY_NAME := NAME_PREFIX + "-wide-ep"
 POKER_NAME := NAME_PREFIX + "-poker"
 DEV_POD_NAME := NAME_PREFIX + "-vllm-dev"
+EVAL_BASE_URL := "http://" + DEPLOY_NAME + "-inference-gateway-istio." + NAMESPACE + ".svc.cluster.local"
+LUSTRE_DATA := env("LUSTRE_DATA", "/mnt/lustre/" + NAME_PREFIX + "/data")
+NYANN_IMAGE_TAG := env("NYANN_IMAGE_TAG", "")
+
+# sa-bench (SemiAnalysis InferenceMAX) targets the wide-ep-lws
+# deployment's llm-d front door. That router is installed with helm release name
+# ${USER}-wide-ep, so its Istio gateway/service is ${USER}-wide-ep-inference-gateway-istio
+# — i.e. the same ${DEPLOY_NAME} convention this Justfile already uses. Override
+# SA_GATEWAY if you named the router release differently.
+SA_MODEL := "deepseek-ai/DeepSeek-V4-Pro"
+# Gateway RESOURCE name; istio reconciles it into a svc named ${GATEWAY_NAME}-istio.
+GATEWAY_NAME := DEPLOY_NAME + "-inference-gateway"
+SA_GATEWAY := GATEWAY_NAME + "-istio"
+SA_BASE_URL := "http://" + SA_GATEWAY + "." + NAMESPACE + ".svc.cluster.local"
 
 GB200_DIR := "gb200"
 DEV_DIR := "dev"
@@ -489,7 +503,7 @@ benchmark-stairs SWEEP_MIN='1600' SWEEP_MAX='14400' STEPS='10' STEP_DURATION='30
       echo "Error: NYANN_BENCH_DIR is not set. Add it to .env or export it." >&2
       exit 1
     fi
-    STEP_SECS="${{STEP_DURATION}%s}"
+    STEP_DURATION_VAL="{{STEP_DURATION}}"; STEP_SECS="${STEP_DURATION_VAL%s}"
     EVAL_DURATION="$(( {{STEPS}} * STEP_SECS ))s"
     cd "{{NYANN_BENCH_DIR}}"
     go run ./cmd/nyann-bench/ generate \
@@ -632,3 +646,85 @@ kv-sweep-collect:
 # Clean up KV sweep jobs
 kv-sweep-clean:
   {{KN}} delete jobs -l app=kv-sweep --ignore-not-found=true
+
+# Deploy the per-user istio Gateway (front door). Renders ${GATEWAY_NAME} from $USER
+# into gateway.yaml and applies it; istio reconciles it into svc/${GATEWAY_NAME}-istio,
+# the target `just sa-bench` hits. Run this BEFORE the router helm install.
+deploy-gateway:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export GATEWAY_NAME="{{GATEWAY_NAME}}"
+  envsubst '${GATEWAY_NAME}' < gateway.yaml | {{KN}} apply -f -
+  echo "Applied Gateway {{GATEWAY_NAME}} -> istio reconciles svc/{{GATEWAY_NAME}}-istio"
+  echo "  sa-bench target: {{SA_BASE_URL}}/v1/completions"
+
+# Tear down the per-user istio Gateway.
+delete-gateway:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export GATEWAY_NAME="{{GATEWAY_NAME}}"
+  envsubst '${GATEWAY_NAME}' < gateway.yaml | {{KN}} delete --ignore-not-found -f -
+
+# Run the SemiAnalysis InferenceMAX "sa-bench" client against the llm-d front door
+# (the wide-ep-lws gateway). CONCURRENCIES is "x"-delimited to match the
+# upstream recipe format. Defaults reproduce disagg-gb200-mid-curve-megamoe (8k1k).
+# Single point (high/max-tpt): `just sa-bench 4096`.
+sa-bench CONCURRENCIES='256x512x1024' ISL='8192' OSL='1024':
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Loading sa-bench client into ConfigMap sa-bench-src..."
+  {{KN}} create configmap sa-bench-src \
+    --from-file=sa-bench/benchmark_serving.py \
+    --from-file=sa-bench/backend_request_func.py \
+    --from-file=sa-bench/benchmark_utils.py \
+    --from-file=sa-bench/encoding_dsv4.py \
+    --dry-run=client -o yaml | {{KN}} apply -f -
+  {{KN}} delete job sa-bench --ignore-not-found=true
+  export SA_MODEL="{{SA_MODEL}}"
+  export SA_BASE_URL="{{SA_BASE_URL}}"
+  export CONCURRENCIES="{{CONCURRENCIES}}"
+  export ISL="{{ISL}}"
+  export OSL="{{OSL}}"
+  envsubst '${SA_MODEL} ${SA_BASE_URL} ${CONCURRENCIES} ${ISL} ${OSL}' \
+    < sa-bench-job.yaml | {{KN}} apply -f -
+  echo "sa-bench submitted: concurrencies={{CONCURRENCIES}} isl={{ISL}} osl={{OSL}}"
+  echo "  target:  {{SA_BASE_URL}}/v1/completions"
+  echo "  follow:  just sa-bench-logs"
+  echo "  results: just sa-bench-results"
+
+# Follow the sa-bench job logs
+sa-bench-logs:
+  {{KN}} logs -f job/sa-bench
+
+# Copy sa-bench result JSONs into a PER-RUN subdir so runs don't clobber.
+# LABEL defaults to a timestamp; pass a name to tag the run, e.g.
+#   just sa-bench-results nightly-high-4096
+sa-bench-results LABEL='':
+  #!/usr/bin/env bash
+  set -euo pipefail
+  LABEL="{{LABEL}}"
+  [ -z "$LABEL" ] && LABEL="run-$(date +%Y%m%d-%H%M%S)"
+  DEST="sa-bench-results/$LABEL"
+  POD=$({{KN}} get pods -l app=sa-bench -o jsonpath='{.items[0].metadata.name}')
+  mkdir -p "$DEST"
+  {{KN}} cp "$POD":/workspace/results "$DEST"
+  echo "Copied results to ./$DEST/"
+  ls -R "$DEST"
+  echo
+  echo "Summarize with:  just sa-bench-summary <NUM_GPUS> $DEST"
+
+# Summarize sa-bench results as (interactivity, tok/s/GPU) points for the
+# SemiAnalysis InferenceMAX "Throughput per GPU vs Interactivity" curve.
+# NUM_GPUS = TOTAL P+D GPUs in the deployment (mid 1p1d-dep8=16, high 2p1d=24,
+# max 3p1d=32) — InferenceMAX amortizes prefill GPUs into the per-GPU number.
+# DIR defaults to the most recent run subdir. Runs locally (stdlib only).
+sa-bench-summary NUM_GPUS='16' DIR='':
+  #!/usr/bin/env bash
+  set -euo pipefail
+  DIR="{{DIR}}"
+  if [ -z "$DIR" ]; then
+    DIR=$(ls -dt sa-bench-results/*/ 2>/dev/null | head -1 || true)
+    [ -z "$DIR" ] && DIR="sa-bench-results"
+    echo "No DIR given; using most recent run: $DIR"
+  fi
+  python3 sa-bench/summarize.py "$DIR" {{NUM_GPUS}}

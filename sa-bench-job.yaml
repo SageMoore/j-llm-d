@@ -1,0 +1,107 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sa-bench
+  labels:
+    app: sa-bench
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: sa-bench
+    spec:
+      restartPolicy: Never
+      # Run on a CPU node (amd64) — this is a pure HTTP load generator, no GPU.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values: ["amd64"]
+      containers:
+        - name: sa-bench
+          # Lightweight multi-arch CPU image — this is a pure HTTP load
+          # generator, so it runs on a cheap amd64 node, NOT the arm64 GB200
+          # serving image. The vendored client uses plain AutoTokenizer (no
+          # vllm), so we just pip-install its deps. Only the DeepSeek-V4
+          # *tokenizer* is pulled, never the model weights. Mirrors the
+          # inference-perf job's python:3.12-slim + pip pattern.
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          workingDir: /sa-bench
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              pip install --no-cache-dir --root-user-action=ignore \
+                numpy transformers tokenizers huggingface_hub tqdm aiohttp
+              mkdir -p /workspace/results
+              # concurrencies are "x"-delimited to match the SemiAnalysis recipe
+              # format, e.g. "256x512x1024".
+              IFS='x' read -ra CONCS <<< "${CONCURRENCIES}"
+              for CONC in "${CONCS[@]}"; do
+                echo "============================================================"
+                echo "sa-bench  concurrency=${CONC}  isl=${ISL}  osl=${OSL}"
+                echo "  num-prompts=$((CONC * 10))  num-warmups=$((2 * CONC))"
+                echo "  target=${BASE_URL}/v1/completions"
+                echo "============================================================"
+                python3 benchmark_serving.py \
+                  --model "${MODEL}" \
+                  --tokenizer "${MODEL}" \
+                  --backend vllm \
+                  --base-url "${BASE_URL}" \
+                  --endpoint /v1/completions \
+                  --dataset-name random \
+                  --random-input-len "${ISL}" \
+                  --random-output-len "${OSL}" \
+                  --random-range-ratio 1.0 \
+                  --num-prompts "$((CONC * 10))" \
+                  --max-concurrency "${CONC}" \
+                  --num-warmups "$((2 * CONC))" \
+                  --request-rate inf \
+                  --ignore-eos \
+                  --use-chat-template \
+                  --dsv4 \
+                  --trust-remote-code \
+                  --percentile-metrics 'ttft,tpot,itl,e2el' \
+                  --save-result \
+                  --result-dir /workspace/results \
+                  --result-filename "sa-bench-c${CONC}-isl${ISL}-osl${OSL}.json"
+              done
+              echo "==== sa-bench complete. Result files: ===="
+              ls -l /workspace/results
+          resources:
+            limits:
+              cpu: "16"
+              memory: "32Gi"
+          env:
+            - name: MODEL
+              value: "${SA_MODEL}"
+            - name: BASE_URL
+              value: "${SA_BASE_URL}"
+            - name: CONCURRENCIES
+              value: "${CONCURRENCIES}"
+            - name: ISL
+              value: "${ISL}"
+            - name: OSL
+              value: "${OSL}"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+                  optional: true
+          volumeMounts:
+            - name: src
+              mountPath: /sa-bench
+              readOnly: true
+      volumes:
+        # The vendored SemiAnalysis client (benchmark_serving.py +
+        # backend_request_func.py + benchmark_utils.py + encoding_dsv4.py),
+        # created from ./sa-bench/ by `just sa-bench`.
+        - name: src
+          configMap:
+            name: sa-bench-src

@@ -1,0 +1,64 @@
+# Per-user istio Gateway for the wide-ep-lws front door.
+#
+# Renamed mirror of the sage-llm-d guides/recipes/gateway/istio (base + istio overlay,
+# merged), prefixed ${GATEWAY_NAME} so it does NOT collide with other users' gateways in
+# the shared namespace. Istio reconciles this into a Deployment + Service named
+# ${GATEWAY_NAME}-istio — which is exactly what `just sa-bench` (SA_BASE_URL) targets.
+#
+# Deploy with:  just deploy-gateway   (renders ${GATEWAY_NAME} from $USER, then applies)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GATEWAY_NAME}
+  labels:
+    app.kubernetes.io/gateway: ${GATEWAY_NAME}
+    app.kubernetes.io/component: inference-gateway
+data:
+  deployment: |
+    spec:
+      template:
+        spec:
+          containers:
+          - name: istio-proxy
+            args:
+              - proxy
+              - router
+              - --domain
+              - $(POD_NAMESPACE).svc.cluster.local
+              - --proxyLogLevel
+              - warn
+              - --proxyComponentLogLevel
+              - misc:warn
+              - --log_output_level
+              - default:warn
+            resources:
+              limits:
+                cpu: "8"
+                memory: 16Gi
+              requests:
+                cpu: 2
+                memory: 4Gi
+  service: |
+    spec:
+      type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${GATEWAY_NAME}
+  labels:
+    istio.io/enable-inference-extproc: "true"
+spec:
+  gatewayClassName: "istio"
+  listeners:
+    - port: 80
+      protocol: HTTP
+      name: default
+      allowedRoutes:
+        namespaces:
+          from: All
+  infrastructure:
+    parametersRef:
+      name: ${GATEWAY_NAME}
+      group: ""
+      kind: ConfigMap
